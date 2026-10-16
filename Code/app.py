@@ -1,79 +1,87 @@
 import cv2
-from deepface import DeepFace
 import numpy as np
 import streamlit as st
+from attendance import AttendanceManager
+from detector import FaceDetector
+from recognizer import FaceAnalyzer
 
-# Page configuration
+# Initialize components
 st.set_page_config(
-    page_title="Face Detection & Emotion Recognition",
-    page_icon="😊",
-    layout="centered",
+    page_title="Modular Smart Attendance", page_icon="🎯", layout="wide"
 )
+detector = FaceDetector()
+analyzer = FaceAnalyzer()
 
-st.title("😊 Face Detection & Emotion Recognition App")
+st.title("🎯 Modular Face, Emotion & Attendance System")
 st.write(
-    "Use your webcam to snap a photo, and the app will detect your face and analyze your emotion in real-time!"
+    "Take a picture via your webcam to run detection, recognition, emotion"
+    " analysis, and log attendance."
 )
 
-# Webcam input widget
-camera_image = st.camera_input("Take a picture")
+col1, col2 = st.columns(2)
 
-if camera_image is not None:
-  # Convert the uploaded image buffer to an OpenCV-readable numpy array
-  bytes_data = camera_image.getvalue()
-  cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+with col1:
+  st.subheader("📷 Live Capture")
+  camera_image = st.camera_input("Capture frame for attendance")
 
-  if cv2_img is not None:
-    try:
-      with st.spinner("Analyzing face and emotions... Please wait."):
-        # Perform emotion analysis and face detection using DeepFace
-        analysis = DeepFace.analyze(
-            cv2_img, actions=["emotion"], enforce_detection=False
+  if camera_image is not None:
+    bytes_data = camera_image.getvalue()
+    frame = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+    if frame is not None:
+      with st.spinner("Processing face, identity, and emotion..."):
+        # 1. Detect Face coordinates
+        faces = detector.detect_faces(frame)
+
+        # 2. Analyze Emotion & Identity
+        emotion, region = analyzer.analyze_emotion(frame)
+        name = analyzer.identify_person(frame)
+
+        x, y, w, h = region["x"], region["y"], region["w"], region["h"]
+
+        # 3. Draw visuals on image
+        color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+        cv2.putText(
+            frame,
+            f"{name} ({emotion})",
+            (x, max(y - 10, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
         )
 
-        # Ensure analysis result is iterable
-        if not isinstance(analysis, list):
-          analysis = [analysis]
-
-        # Draw bounding boxes and dominant emotions on the image
-        for face in analysis:
-          region = face["region"]
-          x, y, w, h = region["x"], region["y"], region["w"], region["h"]
-          dominant_emotion = face["dominant_emotion"]
-
-          # Draw a green rectangle around the face
-          cv2.rectangle(cv2_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-          # Put text for the emotion above the rectangle
-          cv2.putText(
-              cv2_img,
-              dominant_emotion.capitalize(),
-              (x, max(y - 10, 20)),
-              cv2.FONT_HERSHEY_SIMPLEX,
-              0.8,
-              (0, 255, 0),
-              2,
-          )
-
-        # Convert OpenCV BGR image to RGB for Streamlit display
-        cv2_img_rgb = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB)
-
-        st.success("Analysis Complete!")
+        # Render image in Streamlit
         st.image(
-            cv2_img_rgb,
-            caption="Detected Face & Emotion",
+            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+            caption=f"Result: {name}",
             use_container_width=True,
         )
 
-        # Show detailed emotion breakdown
-        st.subheader("Detailed Emotion Probabilities:")
-        emotions = analysis[0]["emotion"]
-        for emotion, score in emotions.items():
-          st.progress(
-              int(score), text=f"{emotion.capitalize()}: {score:.2f}%"
+        # 4. Handle Attendance Logging
+        if name != "Unknown":
+          success, msg = AttendanceManager.log(name, emotion)
+          if success:
+            st.success(f"✅ Hello **{name}**! Emotion: **{emotion}**. {msg}")
+          else:
+            st.info(f"ℹ️ **{name}**: {msg}")
+        else:
+          st.warning(
+              "⚠️ Face not recognized. Please add your photo to the"
+              " `known_faces/` folder."
           )
 
-    except Exception as e:
-      st.error(
-          f"Could not detect a face or process the image. Error details: {e}"
-      )
+with col2:
+  st.subheader("📋 Attendance Records (Excel/CSV)")
+  df_attendance = AttendanceManager.get_records()
+  st.dataframe(df_attendance, use_container_width=True)
+
+  if not df_attendance.empty:
+    csv_data = df_attendance.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download Attendance Sheet",
+        data=csv_data,
+        file_name="attendance.csv",
+        mime="text/csv",
+    )
